@@ -5,6 +5,8 @@ use std::fs::{self};
 use std::io::Error as IoError;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::SecondsFormat;
 use chrono::Utc;
@@ -73,6 +75,7 @@ pub struct RolloutRecorder {
     pub(crate) rollout_path: PathBuf,
     state_db: Option<StateDbHandle>,
     event_persistence_mode: EventPersistenceMode,
+    shutdown_started: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -470,6 +473,7 @@ impl RolloutRecorder {
             rollout_path,
             state_db: state_db_ctx,
             event_persistence_mode,
+            shutdown_started: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -482,6 +486,9 @@ impl RolloutRecorder {
     }
 
     pub(crate) async fn record_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
+        if self.shutdown_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut filtered = Vec::new();
         for item in items {
             // Note that function calls may look a bit strange if they are
@@ -497,34 +504,51 @@ impl RolloutRecorder {
         if filtered.is_empty() {
             return Ok(());
         }
-        self.tx
-            .send(RolloutCmd::AddItems(filtered))
-            .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout items: {e}")))
+        match self.tx.send(RolloutCmd::AddItems(filtered)).await {
+            Ok(()) => Ok(()),
+            Err(_) if self.shutdown_started.load(Ordering::Acquire) => Ok(()),
+            Err(e) => Err(IoError::other(format!("failed to queue rollout items: {e}"))),
+        }
     }
 
     /// Materialize the rollout file and persist all buffered items.
     ///
     /// This is idempotent; after first materialization, repeated calls are no-ops.
     pub async fn persist(&self) -> std::io::Result<()> {
+        if self.shutdown_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Persist { ack: tx })
-            .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout persist: {e}")))?;
-        rx.await
-            .map_err(|e| IoError::other(format!("failed waiting for rollout persist: {e}")))
+        match self.tx.send(RolloutCmd::Persist { ack: tx }).await {
+            Ok(()) => match rx.await {
+                Ok(()) => Ok(()),
+                Err(_) if self.shutdown_started.load(Ordering::Acquire) => Ok(()),
+                Err(e) => Err(IoError::other(format!(
+                    "failed waiting for rollout persist: {e}"
+                ))),
+            },
+            Err(_) if self.shutdown_started.load(Ordering::Acquire) => Ok(()),
+            Err(e) => Err(IoError::other(format!("failed to queue rollout persist: {e}"))),
+        }
     }
 
     /// Flush all queued writes and wait until they are committed by the writer task.
     pub async fn flush(&self) -> std::io::Result<()> {
+        if self.shutdown_started.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let (tx, rx) = oneshot::channel();
-        self.tx
-            .send(RolloutCmd::Flush { ack: tx })
-            .await
-            .map_err(|e| IoError::other(format!("failed to queue rollout flush: {e}")))?;
-        rx.await
-            .map_err(|e| IoError::other(format!("failed waiting for rollout flush: {e}")))
+        match self.tx.send(RolloutCmd::Flush { ack: tx }).await {
+            Ok(()) => match rx.await {
+                Ok(()) => Ok(()),
+                Err(_) if self.shutdown_started.load(Ordering::Acquire) => Ok(()),
+                Err(e) => Err(IoError::other(format!(
+                    "failed waiting for rollout flush: {e}"
+                ))),
+            },
+            Err(_) if self.shutdown_started.load(Ordering::Acquire) => Ok(()),
+            Err(e) => Err(IoError::other(format!("failed to queue rollout flush: {e}"))),
+        }
     }
 
     pub(crate) async fn load_rollout_items(
@@ -610,6 +634,9 @@ impl RolloutRecorder {
     }
 
     pub async fn shutdown(&self) -> std::io::Result<()> {
+        if self.shutdown_started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         let (tx_done, rx_done) = oneshot::channel();
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
             Ok(_) => rx_done
@@ -1326,6 +1353,46 @@ mod tests {
         );
 
         recorder.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_recorder_clone_ignores_late_writes_after_shutdown() -> std::io::Result<()> {
+        let home = TempDir::new().expect("temp dir");
+        let config = ConfigBuilder::default()
+            .codex_home(home.path().to_path_buf())
+            .build()
+            .await?;
+        let thread_id = ThreadId::new();
+        let recorder = RolloutRecorder::new(
+            &config,
+            RolloutRecorderParams::new(
+                thread_id,
+                None,
+                SessionSource::Exec,
+                BaseInstructions::default(),
+                Vec::new(),
+                EventPersistenceMode::Limited,
+            ),
+            None,
+            None,
+        )
+        .await?;
+        let stale_clone = recorder.clone();
+
+        recorder.shutdown().await?;
+
+        stale_clone
+            .record_items(&[RolloutItem::EventMsg(EventMsg::AgentMessage(
+                AgentMessageEvent {
+                    message: "late-agent-event".to_string(),
+                    phase: None,
+                },
+            ))])
+            .await?;
+        stale_clone.persist().await?;
+        stale_clone.flush().await?;
+
         Ok(())
     }
 
