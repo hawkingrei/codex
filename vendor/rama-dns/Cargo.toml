@@ -1,0 +1,75 @@
+[package]
+name = "rama-dns"
+version = "0.3.0-alpha.4"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/plabayo/rama"
+description = "DNS services and utilities for rama"
+
+[features]
+default = []
+
+[lib]
+name = "rama_dns"
+path = "src/lib.rs"
+
+[dependencies.ahash]
+version = "0.8"
+
+[dependencies.hickory-resolver]
+version = "0.26.1"
+features = ["tokio", "system-config"]
+default-features = false
+
+[dependencies.rama-core]
+version = "0.3.0-alpha.4"
+
+[dependencies.rama-net]
+version = "0.3.0-alpha.4"
+
+[dependencies.rama-utils]
+version = "0.3.0-alpha.4"
+
+[dependencies.serde]
+version = "1.0"
+
+[dependencies.tokio]
+version = "1.48"
+features = ["macros", "net"]
+
+[lints.clippy]
+await_holding_lock = "warn"
+clone_on_ref_ptr = "warn"
+create_dir = "warn"
+dbg_macro = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+fn_to_numeric_cast_any = "warn"
+impl_trait_in_params = "warn"
+large_futures = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+mixed_read_write_in_expression = "warn"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+needless_raw_strings = "warn"
+print_stdout = "warn"
+pub_without_shorthand = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+same_name_method = "warn"
+self_named_module_files = "warn"
+str_to_string = "warn"
+string_lit_chars_any = "warn"
+suspicious_xor_used_as_pow = "warn"
+try_err = "warn"
+unnecessary_safety_comment = "warn"
+unneeded_field_pattern = "warn"
+unwrap_used = "warn"
+verbose_file_reads = "warn"
+
+[lints.rust]
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+unreachable_pub = "warn"
