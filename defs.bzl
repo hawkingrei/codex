@@ -1,5 +1,5 @@
 load("@crates//:data.bzl", "DEP_DATA")
-load("@crates//:defs.bzl", "all_crate_deps")
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
 load("@rules_rust//cargo/private:cargo_build_script_wrapper.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_proc_macro", "rust_test")
 load("//bazel/rules/testing:foreign_platform_binary.bzl", "foreign_platform_binary")
@@ -297,6 +297,13 @@ def codex_rust_crate(
     manifest_path = manifest_relpath + "/Cargo.toml"
 
     binaries = DEP_DATA.get(native.package_name())["binaries"]
+    # Workspace crates already expose their Cargo crate names. Only forward
+    # external package renames, where two versions would otherwise collide.
+    crate_aliases = {
+        label: crate_name
+        for label, crate_name in aliases().items()
+        if label.startswith("@crates//:")
+    }
 
     lib_srcs = crate_srcs or native.glob(["src/**/*.rs"], exclude = binaries.values(), allow_empty = True)
 
@@ -318,6 +325,7 @@ def codex_rust_crate(
         lib_rule = rust_proc_macro if proc_macro else rust_library
         lib_rule(
             name = name,
+            aliases = crate_aliases,
             crate_name = crate_name,
             crate_features = crate_features,
             deps = all_crate_deps() + maybe_deps + deps_extra,
@@ -340,6 +348,7 @@ def codex_rust_crate(
         # deliberately changes cwd so Insta sees Cargo-like snapshot paths.
         rust_test(
             name = unit_test_binary,
+            aliases = crate_aliases,
             crate = name,
             crate_features = crate_features,
             deps = all_crate_deps(normal = True, normal_dev = True) + maybe_deps + deps_extra,
@@ -389,6 +398,7 @@ def codex_rust_crate(
         cargo_env["CARGO_BIN_EXE_" + binary] = "$(rlocationpath :%s)" % binary
         rust_binary(
             name = binary,
+            aliases = crate_aliases,
             crate_name = binary.replace("-", "_"),
             crate_root = main,
             deps = all_crate_deps() + maybe_deps + deps_extra,
@@ -413,6 +423,7 @@ def codex_rust_crate(
         # sharding while Clippy can still discover the underlying test crate.
         rust_test(
             name = binary_unit_test_binary,
+            aliases = crate_aliases,
             crate = ":" + binary,
             crate_features = crate_features,
             deps = all_crate_deps(normal_dev = True),
@@ -537,6 +548,7 @@ def codex_rust_crate(
             # materialization, sharding, and flaky retry behavior.
             rust_test(
                 name = integration_test_binary,
+                aliases = crate_aliases,
                 crate_name = test_crate_name,
                 crate_root = test,
                 srcs = [test],
@@ -576,6 +588,7 @@ def codex_rust_crate(
             # Bazel's normal test environment.
             rust_test(
                 name = test_name,
+                aliases = crate_aliases,
                 crate_name = test_crate_name,
                 crate_root = test,
                 srcs = [test],
@@ -651,6 +664,7 @@ def codex_rust_crate(
 
         rust_test(
             name = windows_cross_test_binary,
+            aliases = crate_aliases,
             crate_name = test_crate_name,
             crate_root = test,
             srcs = [test],
